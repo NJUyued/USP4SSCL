@@ -1,13 +1,9 @@
 checkpoint/
 dataset/
-sam/
-dream_ood/CompVis/
-dream_ood/diffusion_model/
-dream_ood/output/
 log/
-# result/
+result/
 *.log
-# *.png
+*.png
 *.npy
 *.pth
 *.txt
@@ -15,7 +11,7 @@ log/
 *.npz
 *.out
 *.pdf
-# *.png
+*.png
 *.jpg
 # Byte-compiled / optimized / DLL files
 __pycache__/
