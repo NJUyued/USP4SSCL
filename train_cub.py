@@ -1,31 +1,21 @@
 import torch
-import torchvision
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
-from torch.autograd import Variable
 from torch.optim import lr_scheduler
-from torchvision import datasets, models, transforms
 import sys
-import time
 import copy
 import argparse
 import numpy as np
-from PIL import Image
 import utils_pytorch
 from utils_incremental.etf import generate_etf_vector
 from utils_incremental.compute_features import compute_features, compute_feats
 from utils_incremental.compute_accuracy import compute_accuracy
-from utils_incremental.compute_confusion_matrix import compute_confusion_matrix
 from utils_incremental.incremental_train_and_eval import incremental_train_and_eval
 from resnet import resnet18
 from resnet20_cifar import resnet20
-import pickle
 import os
 import random
-import pdb
 from dataloder import BaseDataset, BaseDataset_flag
-from torchvision.transforms.functional import to_pil_image
 
 
 parser = argparse.ArgumentParser()
@@ -134,8 +124,8 @@ print(args)
 
 if args.dataset == 'cub':
     dictionary_size = 30
-    label2id = utils_pytorch.get_label2id("./dataset/cub/split/label_name.txt")
-    trainset_data, trainset_targets = utils_pytorch.get_data_file("./dataset/cub/split/train.txt", "./dataset/cub/", label2id)
+    label2id = utils_pytorch.get_label2id("./cub/split/label_name.txt")
+    trainset_data, trainset_targets = utils_pytorch.get_data_file("./cub/split/train.txt", "./cub/", label2id)
     id2label = {index: la for la, index in label2id.items()}
 elif args.dataset == 'cifar100':
     dictionary_size = 500
@@ -280,8 +270,8 @@ for session in range(start_session, int(args.num_classes / args.nb_cl)):
     if args.dataset == 'cub':
         train_file = os.path.join(args.data_dir, args.dataset, "split", "session_{}.txt".format(session - start_session+1))
         test_file = os.path.join(args.data_dir, args.dataset, "split", "test_{}.txt".format(session - start_session+1))
-        X_train, Y_train = utils_pytorch.get_data_file(train_file, "./dataset/cub/", label2id)
-        X_valid,  Y_valid = utils_pytorch.get_data_file(test_file, "./dataset/cub/", label2id)
+        X_train, Y_train = utils_pytorch.get_data_file(train_file, "./cub/", label2id)
+        X_valid,  Y_valid = utils_pytorch.get_data_file(test_file, "./cub/", label2id)
     
     elif args.dataset == 'cifar100':
         train_file = os.path.join(args.data_dir, args.dataset, "split", "session_{}.txt".format(session - start_session+1))

@@ -104,9 +104,6 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
     if use_conloss:
         text_anchor = text_anchor.to(device)
     
-    if use_metric_loss:
-        triplet_loss = SupConLoss(temperature=0.1, contrast_mode='all', base_temperature=0.1)
-    
     if include_unlabel:
         unlabeled_trainset = UnlabelDataset(image_size, dataset=args.dataset)
         unlabeled_trainset.data = unlabeled_data
@@ -188,20 +185,6 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
                 conloss_lb = F.cross_entropy(scores, targets.long())
             else:
                 conloss_lb = torch.tensor(0.0).to(device)
-            
-            if use_metric_loss:
-                metric_loss_lb = triplet_loss(torch.stack([F.normalize(feats, p=2, dim=1), 
-                                                           F.normalize(feats_s, p=2, dim=1)], dim=1), 
-                                              targets, device=device)
-            else:
-                metric_loss_lb = torch.tensor(0.0).to(device)
-
-            if proto_clissifier:
-                prototypes = torch.cat([prototypes_old, prototypes_new], dim=0)
-                outputs_proto = F.linear(F.normalize(feats, p=2, dim=1), F.normalize(prototypes, p=2, dim=1)) / 0.1
-                suploss_proto = nn.CrossEntropyLoss(weight_per_class)(outputs_proto, targets.long())
-            else:
-                suploss_proto = torch.tensor(0.0).to(device)
                 
             if iteration > start_iteration:
                 aux_targets = targets.clone()
@@ -272,115 +255,21 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
                 outputs_s_ulb, raw_feats_s_ulb, feats_s_ulb, aux_outputs_s_ulb = outs_s_ulb['logits'], outs_s_ulb['features'], outs_s_ulb['con_feats'], outs_s_ulb['aux_logits']
                 feats_ulb, feats_s_ulb = F.normalize(feats_ulb, p=2, dim=1), F.normalize(feats_s_ulb, p=2, dim=1)
 
-                if use_proto:
-                    if unlabels_predict_mode == 'cosine':
-                        # 只使用新类原型打伪标签
-                        cosine_scores = F.linear(feats_ulb, F.normalize(prototypes_new, p=2, dim=1)) / 0.1 # COSINE的另一种实现方式
-                        pseudo_label = torch.softmax(cosine_scores, dim=1)
-                        # DA
-                        pseudo_label = distri.dist_align(probs_x_ulb=pseudo_label.detach())
-                        max_probs, predicted_classes = torch.max(pseudo_label, dim=1)
-                        mask = max_probs.ge(p_cutoff).float()
-                        n_mask = max_probs.le(q_cutoff).float()
-                    elif unlabels_predict_mode == 'sqeuclidean':
-                        class_means_squared = torch.sum(F.normalize(prototypes_new, p=2, dim=1)**2, dim=1, keepdim=True)  # (num_classes, 1)
-                        outputs_feature_squared = torch.sum(feats_ulb**2, dim=1, keepdim=True).T  # (1, batch_size)
-                        dot_product = torch.matmul(F.normalize(prototypes_new, p=2, dim=1), feats_ulb.T)  # (num_classes, batch_size)
-                        squared_distances = class_means_squared + outputs_feature_squared - 2 * dot_product  # (num_classes, batch_size)
-                        pseudo_label = torch.softmax(-torch.sqrt(squared_distances.T), dim=1)  # (num_classes, batch_size)
-                        max_probs, max_idx = torch.max(pseudo_label, dim=-1)
-                        mask = max_probs.ge(p_cutoff).float()
-                        n_mask = max_probs.le(q_cutoff).float()
-                        predicted_classes = torch.argmin(squared_distances, dim=0)  # (batch_size,)
-                    else:
-                        raise ValueError('unlabels_predict_mode: {} not supported'.format(unlabels_predict_mode))
-                    rloss = 0.0
-
-                elif use_sim:
-                    bank = mem_bank.clone().detach()
-                    with torch.no_grad():
-                        # 先验屏蔽掉旧类
-                        if old_cn > 0:
-                            outputs_ulb[:, :old_cn] = -1e4
-                        probs_x_ulb_w = F.softmax(outputs_ulb, dim=-1)
-                        teacher_logits = feats_ulb @ bank
-                        if old_cn > 0:
-                            teacher_logits[:, labels_bank<old_cn] = -1e4
-                        teacher_prob_orig = F.softmax(teacher_logits / T, dim=1)
-
-                        factor = probs_x_ulb_w.gather(1, labels_bank.expand([num_ulb, -1]))
-                        teacher_prob = teacher_prob_orig * factor
-                        teacher_prob /= torch.sum(teacher_prob, dim=1, keepdim=True)
-
-                        if smoothing_alpha < 1:
-                            bs = teacher_prob_orig.size(0)
-                            aggregated_prob = torch.zeros([bs, total_cn], device=teacher_prob_orig.device)
-                            aggregated_prob = aggregated_prob.scatter_add(1, labels_bank.expand([bs,-1]) , teacher_prob_orig)
-                            pseudo_label = probs_x_ulb_w * smoothing_alpha + aggregated_prob * (1-smoothing_alpha)
-                        else:
-                            pseudo_label = probs_x_ulb_w
-
-                    student_logits = feats_s_ulb @ bank
-                    student_prob = F.softmax(student_logits / T, dim=1)
-
-                    in_loss = torch.sum(-teacher_prob.detach() * torch.log(student_prob), dim=1).mean()
-                    
-                    sharp_p = student_prob / torch.sum(student_prob, dim=1, keepdim=True)
-                    rloss = 0.0
-                    if me_max:
-                        avg_probs = torch.mean(sharp_p, dim=0)
-                        rloss -= torch.sum(torch.log(avg_probs**(-avg_probs)))
-                    
-                    if epoch == 0:
-                        in_loss = 0.0
-                        rloss = 0.0
-                        pseudo_label = probs_x_ulb_w
-                    
-                    max_probs, predicted_classes = torch.max(pseudo_label, dim=1)
-                    mask = max_probs.ge(p_cutoff).float()
-                    n_mask = max_probs.le(q_cutoff).float()
-
-                else:
-                    pseudo_label = torch.softmax(outputs_ulb[:, old_cn:total_cn], dim=-1)
-                    # DA
-                    pseudo_label = distri.dist_align(probs_x_ulb=pseudo_label.detach())
-                    max_probs, predicted_classes = torch.max(pseudo_label, dim=-1)
-                    mask = max_probs.ge(p_cutoff).float()
-                    n_mask = max_probs.le(q_cutoff).float()
-                    rloss = 0.0
+                pseudo_label = torch.softmax(outputs_ulb[:, old_cn:total_cn], dim=-1)
+                # DA
+                pseudo_label = distri.dist_align(probs_x_ulb=pseudo_label.detach())
+                max_probs, predicted_classes = torch.max(pseudo_label, dim=-1)
+                mask = max_probs.ge(p_cutoff).float()
+                n_mask = max_probs.le(q_cutoff).float()
+                rloss = 0.0
 
                 # 伪标签打法 
-                if use_sim:
-                    consloss_ulb = ce_loss(outputs_s_ulb, pseudo_label, False, reduction='none') * mask 
-                
-                elif use_proto:
-                    if use_hard_labels:
-                        consloss_ulb = ce_loss(outputs_s_ulb, predicted_classes, True, reduction='none') * mask
-                    else:
-                        pseudo_label = pseudo_label**2 / torch.sum(pseudo_label**2, dim=1, keepdim=True)
-                        consloss_ulb = ce_loss(outputs_s_ulb, pseudo_label, False, reduction='none') * mask
-                    in_loss = torch.tensor(0.0).to(device)
-
-                else:
-                    mean_pseudo_label.append(pseudo_label.mean(0))
-                    predicted_classes = predicted_classes + old_cn
-                    consloss_ulb = ce_loss(outputs_s_ulb, predicted_classes, True, reduction='none') * mask
-                    in_loss = torch.tensor(0.0).to(device)
+                mean_pseudo_label.append(pseudo_label.mean(0))
+                predicted_classes = predicted_classes + old_cn
+                consloss_ulb = ce_loss(outputs_s_ulb, predicted_classes, True, reduction='none') * mask
+                in_loss = torch.tensor(0.0).to(device)
 
                 consloss_ulb = consloss_ulb.mean()
-
-                if proto_clissifier:
-                    prototypes = torch.cat([prototypes_old, prototypes_new], dim=0) 
-                    # COSINE的另一种实现方式
-                    outputs_proto_ulb = F.linear(feats_s_ulb, F.normalize(prototypes, p=2, dim=1)) / 0.1
-                    if use_hard_labels:
-                        suploss_proto_ulb = ce_loss(outputs_proto_ulb, predicted_classes, True, reduction='none') * mask
-                    else:
-                        pseudo_label = pseudo_label**2 / torch.sum(pseudo_label**2, dim=1, keepdim=True)
-                        suploss_proto_ulb = ce_loss(outputs_proto_ulb, pseudo_label, False, reduction='none') * mask
-                    suploss_proto_ulb = suploss_proto_ulb.mean()
-                else:
-                    suploss_proto_ulb = torch.tensor(0.0).to(device)
 
                 ulb_total += gt.size(0)
                 ulb_correct += predicted_classes.eq(gt).sum().item()
@@ -393,12 +282,6 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
 
                 if not mask.bool().all():
                     no_mask_pseudo_acc = predicted_classes[torch.logical_not(mask.bool())].eq(gt[torch.logical_not(mask.bool())]).float().mean().item()
-                
-                # 对比学习损失
-                if use_metric_loss:
-                    metric_loss_ulb = triplet_loss(torch.stack([feats_ulb, feats_s_ulb], dim=1), device=device)
-                else:
-                    metric_loss_ulb = torch.tensor(0.0).to(device)
                 
                 if not no_use_conloss_on_ulb:
                     # COSINE的另一种实现方式
@@ -507,89 +390,11 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
                 else:
                     consloss_ulb_aug = torch.tensor(0.0).to(device)
                 
-                # mixup
-                if iteration > start_iteration and use_mix_up and not mask.bool().all():
-                    
-                    mixup_x, mixup_u = inputs[targets<old_cn], inputs_ulb[torch.logical_not(mask.bool())]
-                    q_pseudo_label = torch.softmax(outputs_ulb[torch.logical_not(mask.bool())], dim=-1)
-
-                    mixup_y, mixup_p = F.one_hot(targets[targets<old_cn], total_cn), q_pseudo_label                                            
-                    max_length = max(len(mixup_x), len(mixup_u))
-                    
-                    if len(mixup_x) < max_length:
-                        # 计算重复次数和剩余长度
-                        repeat_times = max_length // mixup_x.size(0)
-                        remaining_length = max_length % mixup_x.size(0)
-
-                        # 通过重复和切片来扩展 mixup_x
-                        expanded_mixup_x = mixup_x.repeat(repeat_times, 1, 1, 1)
-                        expanded_mixup_x = torch.cat((expanded_mixup_x, mixup_x[:remaining_length]), dim=0)
-
-                        # 通过重复和切片来扩展 mixup_y
-                        expanded_mixup_y = mixup_y.repeat(repeat_times, 1)
-                        expanded_mixup_y = torch.cat((expanded_mixup_y, mixup_y[:remaining_length]), dim=0)
-
-                        mixup_x, mixup_y = expanded_mixup_x, expanded_mixup_y
-                    elif len(mixup_u) < max_length:
-                        repeat_times = max_length // mixup_u.size(0)
-                        remaining_length = max_length % mixup_u.size(0)
-
-                        expanded_mixup_u = mixup_u.repeat(repeat_times, 1, 1, 1)
-                        expanded_mixup_u = torch.cat((expanded_mixup_u, mixup_u[:remaining_length]), dim=0)
-
-                        expanded_mixup_p = mixup_p.repeat(repeat_times, 1)
-                        expanded_mixup_p = torch.cat((expanded_mixup_p, mixup_p[:remaining_length]), dim=0)
-
-                        mixup_u, mixup_p = expanded_mixup_u, expanded_mixup_p
-                    else:
-                        pass
-
-                    assert mixup_x.size() == mixup_u.size()
-                    assert mixup_y.size() == mixup_p.size()
-
-                    mixup_inputs = torch.cat([mixup_x, mixup_u], dim=0)
-                    mixup_inputs_labels = torch.cat([mixup_y, mixup_p], dim=0)
-                    mixed_x, mixed_y, lam = mixup_one_target(mixup_inputs, mixup_inputs_labels, 
-                                                            mixup_alpha, is_bias=True)
-                    mixup_outputs = tg_model(mixed_x)
-                    ref_mixup_outputs = ref_model(mixed_x)
-                    mixup_loss = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(mixup_outputs[:, :num_old_classes] / T, dim=1),
-                                                                     F.softmax(ref_mixup_outputs.detach() / T, dim=1)) * T * T * beta * num_old_classes
-                else:
-                    mixup_loss = torch.tensor(0.0).to(device)
-                
-                # 对抗训练增强
-                if iteration > start_iteration and use_adv and mask.bool().any():
-                    _, _, ref_feats_ulb, _ = ref_model(inputs_ulb, return_feats=True)
-                    adv_x = inputs_ulb[mask.bool()]
-                    ref_feats = ref_feats_ulb[mask.bool()]
-                    
-                    if len(adv_x) >= adv_num:
-                        
-                        x, y = gen_adv_data(ref_model, adv_x, ref_feats, gt[mask.bool()], old_cn, prototypes_ref_old, 
-                                            device, adv_num, adv_alpha, adv_epochs, x_min, x_max)
-                        adv_data_num = len(x)
-                        if adv_data_num > 0:
-                            adv_outputs = tg_model(x)
-                            suploss_adv = nn.CrossEntropyLoss(weight_per_class)(adv_outputs, y.long())
-                        else:
-                            suploss_adv = torch.tensor(0.0).to(device)
-                    else:
-                        adv_data_num = 0
-                        suploss_adv = torch.tensor(0.0).to(device)
-                else:
-                    suploss_adv = torch.tensor(0.0).to(device)
-                
                 # 计算总损失
                 loss = lambda_ce * suploss_lb \
                     + lambda_aux * suploss_aux \
-                    + lambda_adv * suploss_adv \
-                    + lambda_mixup * mixup_loss \
-                    + lambda_in * (in_loss + rloss) \
                     + lambda_con * (conloss_lb + conloss_ulb) \
                     + lambda_cons * (consloss_ulb + consloss_ulb_aug) \
-                    + lambda_proto * (suploss_proto + suploss_proto_ulb) \
-                    + lambda_metric * (metric_loss_lb + metric_loss_ulb) \
                     + lambda_kd * (suploss_kd + lambda_ukd * suploss_kd_ulb + suploss_feats_kd)
                 
             else:
@@ -606,21 +411,13 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
             train_loss += loss.item()
             train_suploss_lb += suploss_lb.item()
             train_conloss_lb += conloss_lb.item() if use_conloss else 0.0
-            train_metric_loss_lb += metric_loss_lb.item() if use_conloss and use_metric_loss else 0.0
             train_suploss_aux += suploss_aux.item() if iteration > start_iteration else 0.0
             train_suploss_kd += suploss_kd.item() if iteration > start_iteration and use_distillation and old_mask.sum() > 0 else 0.0
             train_suploss_feats_kd += suploss_feats_kd.item() if iteration > start_iteration and use_feats_kd and use_lb_kd and old_mask.sum() > 0 else 0.0
-            train_suploss_adv += suploss_adv.item() if iteration > start_iteration and epoch >= warmup_epochs and not skip and use_adv and mask.sum().item() >= 10*old_cn else 0.0
             train_consloss_ulb += consloss_ulb.item() if include_unlabel and epoch >= warmup_epochs and not skip else 0.0
             train_consloss_ulb_aug += consloss_ulb_aug.item() if include_unlabel and epoch != 0 and epoch >= warmup_epochs and use_ulb_aug and iteration > start_iteration and not skip else 0.0
             train_conloss_ulb += conloss_ulb.item() if include_unlabel and epoch >= warmup_epochs and not no_use_conloss_on_ulb and not skip else 0.0
-            train_metric_loss_ulb += metric_loss_ulb.item() if include_unlabel and epoch >= warmup_epochs and use_metric_loss and not no_use_conloss_on_ulb and not skip else 0.0
             train_suploss_kd_ulb += suploss_kd_ulb.item() if include_unlabel and epoch >= warmup_epochs and iteration > start_iteration and use_ulb_kd and not skip else 0.0
-            train_mixup_loss += mixup_loss.item() if include_unlabel and epoch >= warmup_epochs and iteration > start_iteration and use_mix_up and not mask.bool().all() else 0.0
-            train_inloss_ulb += in_loss.item() if include_unlabel and epoch != 0 and epoch >= warmup_epochs and iteration > start_iteration and use_sim else 0.0
-            train_rloss_ulb += rloss.item() if include_unlabel and epoch != 0 and epoch >= warmup_epochs and iteration > start_iteration and use_sim and me_max else 0.0
-            train_suploss_proto += suploss_proto.item() if proto_clissifier else 0.0
-            train_suploss_proto_ulb += suploss_proto_ulb.item() if proto_clissifier and include_unlabel and epoch >= warmup_epochs and not skip else 0.0
             train_util_ratio += mask.mean().item() if include_unlabel and epoch >= warmup_epochs else 0.0  
             train_n_util_ratio += n_mask.mean().item() if include_unlabel and epoch >= warmup_epochs else 0.0
             
@@ -633,13 +430,6 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
         
             if use_conloss:
                 writer.add_scalar('Train_Stage/ConLoss_LB', conloss_lb.item(), epoch * len(trainloader) + batch_idx)
-                if use_metric_loss:
-                    writer.add_scalar('Train_Stage/MetricLoss_LB', metric_loss_lb.item(), epoch * len(trainloader) + batch_idx)
-            
-            if proto_clissifier:
-                writer.add_scalar('Train_Stage/SupLoss_Proto', suploss_proto.item(), epoch * len(trainloader) + batch_idx)
-                if include_unlabel and epoch >= warmup_epochs:
-                    writer.add_scalar('Train_Stage/SupLoss_Proto_ULB', suploss_proto_ulb.item(), epoch * len(trainloader) + batch_idx)
 
             if iteration > start_iteration:
                 writer.add_scalar('Train_Stage/SupLoss_AUX', suploss_aux.item(), epoch * len(trainloader) + batch_idx)
@@ -653,26 +443,12 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
                 writer.add_scalars('Train_Stage/Ratio_ULB', {'p_mask': mask.mean().item(), 'n_mask': n_mask.mean().item()}, epoch * len(trainloader) + batch_idx)
                 writer.add_scalars('Train_Stage/Pseusdo_Acc', {'mask_acc': mask_pseudo_acc if mask.bool().any() else 0.0, 'no_mask_acc': no_mask_pseudo_acc if not mask.bool().all() else 0.0, 'acc': pseudo_acc}, epoch * len(trainloader) + batch_idx)
                 
-                if use_sim and epoch != 0:
-                    writer.add_scalar('Train_Stage/InLoss_ULB', in_loss.item(), epoch * len(trainloader) + batch_idx)
-                    if me_max:
-                        writer.add_scalar('Train_Stage/Rloss', rloss.item(), epoch * len(trainloader) + batch_idx)
-
                 if iteration > start_iteration and use_ulb_kd:
                     writer.add_scalar('Train_Stage/SupLoss_KD_ULB', suploss_kd_ulb.item(), epoch * len(trainloader) + batch_idx)
-                
-                if iteration > start_iteration and use_mix_up and not mask.bool().all():
-                    writer.add_scalar('Train_Stage/Mixup_Loss', mixup_loss.item(), epoch * len(trainloader) + batch_idx)
-
-                if iteration > start_iteration and use_adv and mask.sum().item() > adv_num:
-                    writer.add_scalar('Train_Stage/SupLoss_ADV', suploss_adv.item(), epoch * len(trainloader) + batch_idx)
-                    writer.add_scalar('Train_Stage/Adv_Num', adv_data_num, epoch * len(trainloader) + batch_idx)
                     
                 if not no_use_conloss_on_ulb:
                     writer.add_scalar('Train_Stage/ConLoss_ULB', conloss_ulb.item(), epoch * len(trainloader) + batch_idx)
-                    if use_metric_loss:
-                        writer.add_scalar('Train_Stage/MetricLoss_ULB', metric_loss_ulb.item(), epoch * len(trainloader) + batch_idx)
-                
+
                 if iteration > start_iteration and use_ulb_aug and epoch != 0:
                     writer.add_scalar('Train_Stage/ConsLoss_ULB_Aug', consloss_ulb_aug.item() if epoch != 0 else 0.0, epoch * len(trainloader) + batch_idx) 
                     
@@ -683,7 +459,7 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
         if update_proto:
             prototypes_old, prototypes_new, pro = get_proto(trainloader, tg_model, old_cn, device, False)
         
-        if include_unlabel and epoch >= warmup_epochs and not use_sim and not use_proto:
+        if include_unlabel and epoch >= warmup_epochs:
             mean_pseudo_label = torch.stack(mean_pseudo_label).mean(0)
             writer.add_text('Train Stage/Pseudo distribution', str(mean_pseudo_label.cpu().numpy()), epoch)
 
@@ -706,15 +482,14 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
         if epoch % 10 == 0 or epoch == epochs-1:
             
             if include_unlabel and epoch >= warmup_epochs:
-                if not use_sim and not use_proto:
-                    print('Epoch: {}, Pseudo distribution: {}'.format(epoch, mean_pseudo_label.cpu().numpy()))
+                print('Epoch: {}, Pseudo distribution: {}'.format(epoch, mean_pseudo_label.cpu().numpy()))
                 print('Epoch: {}, use_ratio: {}, acc_classifier: {}, acc_proto: {}'.format(epoch, pseudo_labels_ratio, pseudo_label_acc_p, pseudo_label_acc_s))
             
             print('Epoch: {}, Trainset: {}, Unlabel_Trainset: {}, Lr: {}, P_cutoff: {}, Q_cutoff: {}, Lambda_KD: {}, Lambda_CON: {}, Lambda_CONS: {}, Lambda_ULB_KD: {}, Lambda_CAT: {}, Lambda_UKD: {}'.format(epoch, len(trainset), \
                     len(ssl_trainloader.dataset) if include_unlabel else 0, tg_lr_scheduler.get_last_lr()[0], p_cutoff, q_cutoff, lambda_kd, lambda_con, lambda_cons, (old_cn//(total_cn-old_cn)), lambda_cat, lambda_ukd))
-            print('Epoch: {}, SupLoss_LB: {:.4f}, SupLoss_KD: {:.4f}, SupLoss_Feats_KD: {:.4f}, SupLoss_ADV: {:.4f}, MixupLoss: {:.4f}, ConLoss_LB: {:.4f}, Metric_loss_LB: {:.4f}, ConsLoss_ULB: {:.4f}, ConsLoss_ULB_Aug: {:.4f}, SupLoss_KD_ULB: {:.4f}, ConLoss_ULB: {:.4f}, MetricLoss_ULB: {:.4f}, SupLoss_Proto_LB: {:.4f}, SupLoss_Proto_ULB: {:.4f}, InLoss_ULB: {:.4f}, RLoss: {:.4f}, Loss: {:.4f} Acc: {:.4f}, Test Loss: {:.4f}, Test Acc: {:.4f}, Test Seesion Loss: {:.4f}, Test Session Acc: {:.4f}'.format(epoch, \
-                    train_suploss_lb / (batch_idx+1), train_suploss_kd / (batch_idx+1),  train_suploss_feats_kd / (batch_idx+1), train_suploss_adv  / (batch_idx+1), train_mixup_loss / (batch_idx+1), train_conloss_lb / (batch_idx+1), train_metric_loss_lb / (batch_idx+1), train_consloss_ulb / (batch_idx+1), train_consloss_ulb_aug / (batch_idx+1),
-                    train_suploss_kd_ulb / (batch_idx+1), train_conloss_ulb / (batch_idx+1), train_metric_loss_ulb / (batch_idx+1), train_suploss_proto / (batch_idx+1), train_suploss_proto_ulb / (batch_idx+1), train_inloss_ulb / (batch_idx+1), train_rloss_ulb  / (batch_idx+1), train_loss / (batch_idx+1), 100. * correct / total, test_loss, test_acc, test_loss_session, test_acc_session))
+            print('Epoch: {}, SupLoss_LB: {:.4f}, SupLoss_KD: {:.4f}, SupLoss_Feats_KD: {:.4f}, ConLoss_LB: {:.4f}, Metric_loss_LB: {:.4f}, ConsLoss_ULB: {:.4f}, ConsLoss_ULB_Aug: {:.4f}, SupLoss_KD_ULB: {:.4f}, ConLoss_ULB: {:.4f}, Loss: {:.4f} Acc: {:.4f}, Test Loss: {:.4f}, Test Acc: {:.4f}, Test Seesion Loss: {:.4f}, Test Session Acc: {:.4f}'.format(epoch, \
+                    train_suploss_lb / (batch_idx+1), train_suploss_kd / (batch_idx+1),  train_suploss_feats_kd / (batch_idx+1), train_conloss_lb / (batch_idx+1), train_metric_loss_lb / (batch_idx+1), train_consloss_ulb / (batch_idx+1), train_consloss_ulb_aug / (batch_idx+1),
+                    train_suploss_kd_ulb / (batch_idx+1), train_conloss_ulb / (batch_idx+1), train_loss / (batch_idx+1), 100. * correct / total, test_loss, test_acc, test_loss_session, test_acc_session))
     
     if iteration > start_iteration:
         tg_model.weight_align(total_cn-old_cn)
@@ -723,81 +498,6 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
     print('Test set: {} Test Loss: {:.4f} Acc: {:.4f} Test Session Loss: {:.4f} Session Acc: {:.4f}'.format(len(testloader), loss, acc, loss_session, acc_session))
     writer.close()
     return tg_model
-
-
-class ContrastiveLoss(nn.Module):
-    """
-    Compute contrastive loss
-    """
-
-    def __init__(self, margin=0, warmup_rate=0.5):
-        super(ContrastiveLoss, self).__init__()
-        self.margin = margin
-        self.warmup_rate = warmup_rate
-
-    def forward(
-        self,
-        scores,
-        device,
-        targets,
-        hard_negative=True,
-        labels=None,  # onehot
-        soft_margin="linear",
-        mode="train",
-    ):
-        # compute image-sentence score matrix
-        d2 = scores.gather(1, targets.view(-1, 1)).expand(-1, scores.size(1))
-
-        if labels is None:
-            margin = self.margin
-        elif soft_margin == "linear":
-            margin = self.margin * labels
-        elif soft_margin == "exponential":
-            s = (torch.pow(10, labels) - 1) / 9
-            margin = self.margin * s
-        elif soft_margin == "sin":
-            s = torch.sin(math.pi * labels - math.pi / 2) / 2 + 1 / 2
-            margin = self.margin * s
-
-        # compare every diagonal score to scores in its row: image retrieval
-        cost_im = (margin + scores - d2).clamp(min=1e-8)
-
-        # clear diagonals
-        # for i, target in enumerate(targets):
-        #     cost_im[i, target] = 0
-
-        mask = torch.zeros_like(cost_im).scatter_(1, targets.view(-1, 1), 1).bool()
-        # 使用 masked_fill_ 在指定位置填充
-        cost_im.masked_fill_(mask, 0)
-
-        # maximum and mean
-        cost_im_max = cost_im.max(0)[0]
-        cost_im_mean = cost_im.mean(0)
-
-        if mode == "predict":
-            p = margin - cost_im_mean
-            p = p.clamp(min=0, max=margin)
-            idx = torch.argsort(p)
-            ratio = scores.size(0) // 10 + 1
-            p = p / torch.mean(p[idx[-ratio:]])
-            return p
-        elif mode == "warmup_sele":
-            all_loss = cost_im_mean
-            y = all_loss.topk(k=int(scores.size(0) * self.warmup_rate), dim=0, largest=False, sorted=True)
-            index = torch.zeros(scores.size(0)).to(device)
-            index[y[1]] = 1
-            all_loss = all_loss * index
-            # 选择clean样本
-            return all_loss.sum()
-        elif mode == "warmup":
-            return cost_im_mean.sum()
-        elif mode == "lb_train" or mode == "ulb_train":
-            if hard_negative:
-                return cost_im_max.sum()
-            else:
-                return cost_im_mean.sum()
-        elif mode == "eval_loss":
-            return cost_im_mean
 
 
 def ce_loss(logits, targets, use_hard_labels=True, reduction='none'):
@@ -882,28 +582,6 @@ def consistency_loss(logits_w, logits_s, feats_ulb, text_anchor, old_cn, total_c
     else:
         assert Exception('Not Implemented consistency_loss')
 
-
-def ce_loss_raw(logits, targets, reduction='none'):
-    """
-    cross entropy loss in pytorch.
-
-    Args:
-        logits: logit values, shape=[Batch size, # of classes]
-        targets: integer or vector, shape=[Batch size] or [Batch size, # of classes]
-        # use_hard_labels: If True, targets have [Batch size] shape with int values. If False, the target is vector (default True)
-        reduction: the reduction argument
-    """
-    if logits.shape == targets.shape:
-        # one-hot target
-        log_pred = F.log_softmax(logits, dim=-1)
-        nll_loss = torch.sum(-targets * log_pred, dim=1)
-        if reduction == 'none':
-            return nll_loss
-        else:
-            return nll_loss.mean()
-    else:
-        log_pred = F.log_softmax(logits, dim=-1)
-        return F.nll_loss(log_pred, targets, reduction=reduction)
 
 def get_proto(trainloader, tg_model, old_cn, device, normalize=True):
     tg_model.eval()
@@ -1129,45 +807,3 @@ def validate(tg_model, testloader, device, weight_per_class, old_cn, nb_cl_fg=No
 
     return test_loss/(batch_idx+1), 100.*correct/total, test_loss_session/(batch_idx+1), 100.*correct_session/total, 100.*old_acc, 100.*new_acc
      
-    
-def get_session_labels(class_labels: torch.tensor, nb_cl_fg: int, nb_cl: int):
-    session_labels = torch.ones_like(class_labels) * -1
-    for i in range(len(class_labels)):
-        if class_labels[i] < nb_cl_fg:
-            session_labels[i] = 0
-        else:
-            session_labels[i] = (class_labels[i] - nb_cl_fg) // (nb_cl) + 1
-    return session_labels.to(class_labels)
-
-def save_tensor_to_img(x_top, tg, path):
-    
-    mean = [x / 255 for x in [129.3, 124.1, 112.4]]
-    std = [x / 255 for x in [68.2, 65.4, 70.4]]
-
-    # 计算反归一化参数
-    inv_mean = [-m / s for m, s in zip(mean, std)]
-    inv_std = [1 / s for s in std]
-
-    # 定义反归一化变换
-    inv_normalize = transforms.Normalize(mean=inv_mean, std=inv_std)
-
-    # 定义转换为 PIL 图像的变换
-    to_pil = transforms.ToPILImage()
-
-    # 假设 x_top 是加载到 GPU 上的图片 Tensor
-    # 将 Tensor 从 GPU 移动到 CPU
-    x_top_cpu = x_top.cpu()
-
-    # 处理每一张图片
-    for i in range(x_top_cpu.size(0)):
-        img_tensor = x_top_cpu[i]
-        
-        # 反归一化
-        img_tensor = inv_normalize(img_tensor)
-        
-        # 转换为 PIL 图像
-        img = to_pil(img_tensor)
-        
-        # 保存图像
-        img.save(os.path.join(path, f'image_{i}_tg_{tg[i].item()}.png'))
-    

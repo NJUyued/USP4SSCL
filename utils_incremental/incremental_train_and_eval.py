@@ -26,7 +26,7 @@ from torch.utils.data import BatchSampler, RandomSampler
 from itertools import cycle
 from torch.utils.tensorboard import SummaryWriter
 
-def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, uncertainty_distillation, 
+def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id,
                                prototypes, prototypes_flag, prototypes_on_flag, update_unlabeled, 
                                epochs, method, unlabeled_num, unlabeled_iteration, unlabeled_num_selected, 
                                train_batch_size, tg_model, ref_model, tg_optimizer, tg_lr_scheduler, trainloader, 
@@ -36,7 +36,7 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
                                device=None, use_da=False, use_proto=False, update_proto=False, u_ratio=1,lambda_kd=1.0, 
                                lambda_con=1.0, lambda_cons=1.0, lambda_in=1.0, lambda_reg=1.0, lambda_session=1.0, use_proto_classifier=False, 
                                kd_only_old=False, u_iter=100, no_use_conloss_on_ulb=False, unlabels_predict_mode='sqeuclidean', use_hard_labels=True,
-                               use_sim=False, smoothing_alpha=0.7, p_cutoff=0.0, use_ulb_kd=False, use_srd=False, use_session_labels=False, use_ulb_aug=False):
+                               use_sim=False, smoothing_alpha=0.7, p_cutoff=0.0, use_ulb_kd=False, use_ulb_aug=False):
     N = 128
     writer = SummaryWriter(log_dir='checkpoint/logs/{}/{}'.format(args.ckp_prefix, iteration))
     
@@ -51,8 +51,6 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
                                                             shuffle=True, num_workers=4) 
         ssl_trainloader = torch.utils.data.DataLoader(unlabeled_trainset, batch_size=u_ratio*train_batch_size, 
                                                       shuffle=True, num_workers=4)
-        # print("unlabeled dataset trans: {}, \nstrong_trans: {}".format(unlabeled_trainset.transform,
-        #                                                                unlabeled_trainset.strong_transform))
         ref_model.eval()
         num_old_classes = ref_model.fc.out_features
 
@@ -118,69 +116,14 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
             else:
                 ref_outputs, ref_raw_feats, _, _= ref_model(inputs, return_feats=True)
                 suploss_lb = nn.CrossEntropyLoss(weight_per_class)(outputs, targets.long())
-                if use_session_labels:
-                    session_targets = get_session_labels(targets, nb_cl_fg, nb_cl)
-                    suploss_lb_session = nn.CrossEntropyLoss()(session_outputs, session_targets.long())
+
+                if kd_only_old:
+                    old_mask = targets < num_old_classes
+                    suploss_kd = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(outputs[old_mask][:, :num_old_classes] / T, dim=1),
+                                    F.softmax(ref_outputs[old_mask].detach() / T, dim=1)) * T * T * beta * num_old_classes
                 else:
-                    suploss_lb_session = 0.0 
-
-                if uncertainty_distillation:
-                    ##################################
-                    # uncertainty-aware distillation #
-                    ##################################
-                    out_prob = []
-                    for _ in range(10):
-                        #Gaussian noise
-                        noise = torch.clamp(torch.randn_like(inputs) * 0.01, -0.02, 0.02)
-                        inputs_noise = inputs + noise.to(device)
-                        outputs_noise = ref_model(inputs_noise)
-                        out_prob.append(F.softmax(outputs_noise, dim=1))
-                    out_prob = torch.stack(out_prob)
-                    out_std = torch.std(out_prob, dim=0)
-                    out_prob = torch.mean(out_prob, dim=0)
-                    max_value, max_idx = torch.max(out_prob, dim=1)
-                    max_std = out_std.gather(1, max_idx.view(-1, 1))
-                    max_std_sorted, std_indices = torch.sort(max_std, descending=False)
-                    max_std = max_std.squeeze(1).detach().cpu().numpy()
-
-                    outputs_cp = outputs
-                    outputs = outputs.detach().cpu().numpy()
-                    ref_outputs = ref_outputs.detach().cpu().numpy()
-                    
-                    idx_del = []
-                    for idx in range(len(max_std)):
-                        if max_std[idx] > max_std_sorted[int(u_t * len(max_std))]:
-                            if flags[idx] == 0:
-                                idx_del.append(idx)
-                    
-                    outputs = np.delete(outputs, idx_del, axis = 0)
-                    outputs = torch.from_numpy(outputs)
-
-                    ref_outputs = np.delete(ref_outputs, idx_del, axis = 0)
-                    ref_outputs = torch.from_numpy(ref_outputs)
-                    if adapt_lamda:
-                        cur_lamda = base_lamda * 1 / u_t *  math.sqrt(num_old_classes / nb_cl)
-                    else:
-                        cur_lamda = base_lamda
-                    
-                    suploss_kd = cur_lamda * nn.KLDivLoss(reduction='batchmean')(F.log_softmax(outputs[:, :num_old_classes] / T, dim=1),
-                                       F.softmax(ref_outputs.detach() / T, dim=1)) * T * T * beta * num_old_classes
-                    suploss_reg = 0.0
-                else:
-                    if use_srd:
-                        old_mask = targets < num_old_classes
-                        tg_outputs = ref_model.get_logits(raw_feats)
-                        suploss_kd = nn.MSELoss()(tg_outputs[old_mask], ref_outputs.detach()[old_mask]) * 10
-                        suploss_reg = nn.L1Loss()(raw_feats[old_mask], ref_raw_feats.detach()[old_mask])
-                    else:
-                        if kd_only_old:
-                            old_mask = targets < num_old_classes
-                            suploss_kd = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(outputs[old_mask][:, :num_old_classes] / T, dim=1),
-                                            F.softmax(ref_outputs[old_mask].detach() / T, dim=1)) * T * T * beta * num_old_classes
-                        else:
-                            suploss_kd = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(outputs[:, :num_old_classes] / T, dim=1),
-                                            F.softmax(ref_outputs.detach() / T, dim=1)) * T * T * beta * num_old_classes
-                        suploss_reg = 0.0 
+                    suploss_kd = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(outputs[:, :num_old_classes] / T, dim=1),
+                                    F.softmax(ref_outputs.detach() / T, dim=1)) * T * T * beta * num_old_classes
                 # 将提取的视觉特征与text特征空间对齐
                 if use_conloss:
                     scores = F.cosine_similarity(text_anchor.unsqueeze(0).repeat(len(feats), 1, 1),
@@ -189,23 +132,17 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
                 else:
                     conloss_lb = 0.0
                 
-                loss = suploss_lb + lambda_kd * suploss_kd + lambda_con * conloss_lb + lambda_reg * suploss_reg + lambda_session * suploss_lb_session
+                loss = suploss_lb + lambda_kd * suploss_kd + lambda_con * conloss_lb
                 
             loss.backward()
             tg_optimizer.step()
-            # tg_lr_scheduler.step()
             
             train_loss += loss.item()
             train_suploss_lb += suploss_lb.item()
             train_conloss_lb += conloss_lb.item() if use_conloss else 0.0
             train_suploss_kd += suploss_kd.item() if iteration > start_iteration else 0.0
-            train_suploss_reg += suploss_reg.item() if iteration > start_iteration and use_srd else 0.0
-            train_suploss_session += suploss_lb_session.item() if iteration > start_iteration and use_session_labels else 0.0
-
-            if uncertainty_distillation and iteration > start_iteration:
-                _, predicted = outputs_cp.max(1)
-            else:
-                _, predicted = outputs.max(1)
+            
+            _, predicted = outputs.max(1)
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
             
@@ -216,12 +153,6 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
             
             if iteration > start_iteration:
                 writer.add_scalar('Train/SupLoss_KD', suploss_kd.item(), epoch * len(trainloader) + batch_idx)
-            
-                if use_srd:
-                    writer.add_scalar('Train/SupLoss_REG', suploss_reg.item(), epoch * len(trainloader) + batch_idx)
-
-                if use_session_labels:
-                    writer.add_scalar('Train/SupLoss_SESSION', suploss_lb_session.item(), epoch * len(trainloader) + batch_idx)
 
         tg_lr_scheduler.step()
         test_loss, test_acc, test_loss_session, test_acc_session = validate(tg_model, testloader, device, weight_per_class, nb_cl_fg, nb_cl)
@@ -230,9 +161,6 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
         writer.add_scalars("Accuracy", {"Train": 100.*correct/total, "Test": test_acc}, epoch)
         writer.add_scalars("Loss", {"Train": train_loss / (batch_idx + 1), "Test": test_loss}, epoch)
         
-        if use_session_labels:
-            writer.add_scalar("Session Accuracy", test_acc_session, epoch)
-            writer.add_scalar("Session Loss",  test_loss_session, epoch)
 
         if epoch % 40 == 0 or epoch == epochs-1:    
             if iteration == start_iteration:
@@ -240,7 +168,7 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
                     train_suploss_lb / (batch_idx + 1), train_conloss_lb / (batch_idx + 1),
                     train_loss / (batch_idx + 1), 100. * correct / total, test_loss, test_acc))
             else:
-                print('Trainset: {}, SupLoss_LB: {:.4f}, SupLoss_KD: {:.4f}, SupLoss_REG: {:.4f}, SupLoss_SESSION: {:.4f}, ConLoss_LB: {:.4f}, Loss: {:.4f} Acc: {:.4f}, Test Loss: {:.4f}, Test Acc: {:.4f}, Test Session Loss: {:.4f}, Test Session Acc: {:.4f}'.format(len(trainloader.dataset), \
+                print('Trainset: {}, SupLoss_LB: {:.4f}, SupLoss_KD: {:.4f}, SupLoss_SESSION: {:.4f}, ConLoss_LB: {:.4f}, Loss: {:.4f} Acc: {:.4f}, Test Loss: {:.4f}, Test Acc: {:.4f}, Test Session Loss: {:.4f}, Test Session Acc: {:.4f}'.format(len(trainloader.dataset), \
                         train_suploss_lb / (batch_idx + 1), train_suploss_kd / (batch_idx + 1), train_suploss_reg / (batch_idx + 1), train_suploss_session / (batch_idx + 1),
                         train_conloss_lb / (batch_idx + 1), train_loss / (batch_idx + 1), 100. * correct / total, test_loss, test_acc, test_loss_session, test_acc_session))
 
@@ -373,14 +301,6 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
                         sampler_x = RandomSampler(trainset_1, replacement=True, num_samples = u_iter * train_batch_size)
                         batch_sampler_x = BatchSampler(sampler_x, train_batch_size, drop_last=True)  # yield a batch of samples one time
                         trainloader_1 = torch.utils.data.DataLoader(trainset_1, batch_sampler=batch_sampler_x, num_workers=4)
-                        # if args.dataset == "cub":
-                        #     # train iter = 100
-                        #     sampler_x = RandomSampler(trainset_1, replacement=True, num_samples = u_iter * train_batch_size)
-                        #     batch_sampler_x = BatchSampler(sampler_x, train_batch_size, drop_last=True)  # yield a batch of samples one time
-                        #     trainloader_1 = torch.utils.data.DataLoader(trainset_1, batch_sampler=batch_sampler_x, num_workers=4)
-                        # else:
-                        #     # train iter = trainsize / batchsize
-                        #     trainloader_1 = torch.utils.data.DataLoader(trainset_1, batch_size=train_batch_size, shuffle=True, num_workers=4)
                         
                         if selected_unlabeld_data is None:
                             selected_unlabeld_data = unlabeled_selected
@@ -435,27 +355,15 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
 
                                 suploss_lb = nn.CrossEntropyLoss(weight_per_class)(outputs, targets.long())
 
-                                if use_session_labels:
-                                    session_targets = get_session_labels(targets, nb_cl_fg, nb_cl)
-                                    suploss_lb_session = nn.CrossEntropyLoss()(session_outputs, session_targets.long())
-                                else:
-                                    suploss_lb_session = 0.0
-
-                                if use_srd:
+                                
+                                if kd_only_old:
                                     old_mask = targets < num_old_classes
-                                    tg_outputs = ref_model.get_logits(raw_feats)
-                                    suploss_kd = nn.MSELoss()(tg_outputs[old_mask], ref_outputs.detach()[old_mask]) * 10
-                                    suploss_reg = nn.L1Loss()(raw_feats[old_mask], ref_raw_feats.detach()[old_mask])
+                                    suploss_kd = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(outputs[old_mask][:, :num_old_classes] / T, dim=1),
+                                                        F.softmax(ref_outputs[old_mask].detach() / T, dim=1)) * T * T * beta * num_old_classes
                                 else:
-                                    if kd_only_old:
-                                        old_mask = targets < num_old_classes
-                                        suploss_kd = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(outputs[old_mask][:, :num_old_classes] / T, dim=1),
-                                                            F.softmax(ref_outputs[old_mask].detach() / T, dim=1)) * T * T * beta * num_old_classes
-                                    else:
-                                        suploss_kd = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(outputs[:, :num_old_classes] / T, dim=1),
-                                                                F.softmax(ref_outputs.detach() / T, dim=1)) * T * T * beta * num_old_classes
-                                    suploss_reg = 0.0 
-
+                                    suploss_kd = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(outputs[:, :num_old_classes] / T, dim=1),
+                                                            F.softmax(ref_outputs.detach() / T, dim=1)) * T * T * beta * num_old_classes
+                                
                                 if use_conloss:  
                                     scores = F.cosine_similarity(text_anchor.unsqueeze(0).repeat(len(feats), 1, 1),
                                                                     feats.unsqueeze(1).repeat(1, len(text_anchor), 1), 2) / 0.1
@@ -480,225 +388,122 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
                                     outputs_s_ulb, raw_feats_s_ulb, feats_s_ulb, _ = tg_model(inputs_s_ulb, return_feats=True)
                                     feats_ulb, feats_s_ulb = F.normalize(feats_ulb, p=2, dim=1), F.normalize(feats_s_ulb, p=2, dim=1)
                                     
-                                    if use_session_labels:
-                                        session_targets = torch.ones(len(inputs_ulb))*(total_cn - nb_cl_fg) // nb_cl
-                                        suploss_ulb_session = nn.CrossEntropyLoss()(session_outputs_ulb, session_targets.to(device).long())
-                                    else:
-                                        suploss_ulb_session = 0.0
 
                                     distri.append(torch.softmax(outputs_ulb[:, old_cn:total_cn], dim=-1).detach().mean(0))
                                     if len(distri) > N:
                                         distri.pop(0)
                                     
-                                    if use_sim:
-                                        num_ulb = len(gt)
-                                        bank = mem_bank.clone().detach()
-                                        with torch.no_grad():
-                                            # 先验屏蔽掉旧类
-                                            outputs_ulb[:, :old_cn] = -1e4
-                                            outputs_ulb = F.softmax(outputs_ulb, dim=-1)
-                                            teacher_logits = feats_ulb @ bank
-                                            teacher_logits[:, labels_bank<old_cn] = -1e4
-                                            teacher_prob_orig = F.softmax(teacher_logits / 0.5, dim=1)
+                                    pseudo_label = torch.softmax(outputs_ulb[:, old_cn:total_cn], dim=-1)
+                                    
+                                    if use_da:
+                                        pseudo_label = pseudo_label / distri
+                                        pseudo_label = pseudo_label / pseudo_label.sum(dim=1, keepdim=True)
 
-                                            factor = outputs_ulb.gather(1, labels_bank.expand([num_ulb, -1]))
-                                            teacher_prob = teacher_prob_orig * factor
-                                            teacher_prob /= torch.sum(teacher_prob, dim=1, keepdim=True)
-
-                                            if smoothing_alpha < 1:
-                                                bs = teacher_prob_orig.size(0)
-                                                aggregated_prob = torch.zeros([bs, total_cn], device=teacher_prob_orig.device)
-                                                aggregated_prob = aggregated_prob.scatter_add(1, labels_bank.expand([bs,-1]) , teacher_prob_orig)
-                                                probs_x_ulb_w = outputs_ulb * smoothing_alpha + aggregated_prob * (1-smoothing_alpha)
-                                            else:
-                                                probs_x_ulb_w = outputs_ulb
-
-                                        student_logits = feats_s_ulb @ bank
-                                        student_prob = F.softmax(student_logits / 0.5, dim=1)
-
-                                        in_loss = torch.sum(-teacher_prob.detach() * torch.log(student_prob), dim=1).mean()
-                                        
-                                        if epoch == 0:
-                                            in_loss = 0.0
-                                            probs_x_ulb_w = outputs_ulb
-                                        
-                                        max_value, max_idx = torch.max(probs_x_ulb_w, dim=1)
-                                        mask = max_value.ge(p_cutoff)    
-                                        mask = mask.float()
-
-                                        consloss_ulb = consistency_loss_raw(outputs_s_ulb, probs_x_ulb_w, 'ce', mask=mask)
-
-                                        if use_conloss and not no_use_conloss_on_ulb:
-                                            scores = F.cosine_similarity(text_anchor.unsqueeze(0).repeat(len(feats_s_ulb), 1, 1),
-                                                    feats_s_ulb.unsqueeze(1).repeat(1, len(text_anchor), 1), 2) / 0.1
-                                            conloss_ulb = F.cross_entropy(scores, probs_x_ulb_w.max(1)[1].long())
-                                        else:
-                                            conloss_ulb = 0.0
-
-                                        update_bank(feats, targets, indexs)
-                                        loss = suploss_lb + lambda_kd * suploss_kd + lambda_con * (conloss_lb + consloss_ulb) + lambda_cons * consloss_ulb + lambda_in * in_loss
-               
+                                    max_probs, predicted_classes = torch.max(pseudo_label, dim=-1)
+                                    mask = max_probs.ge(p_cutoff).float()
+                                    
+                                    predicted_classes = predicted_classes + old_cn
+                                    if use_hard_labels:
+                                        consloss_ulb = ce_loss(outputs_s_ulb, predicted_classes, True, reduction='none') * mask
                                     else:
-                                        if use_proto:
-                                            if unlabels_predict_mode == 'cosine':
-                                                cosine_scores = F.cosine_similarity(prototypes_new.unsqueeze(0).repeat(len(feats_ulb), 1, 1),
-                                                                                    feats_ulb.unsqueeze(1).repeat(1, len(prototypes_new), 1), 2) / 0.1
-                                                pseudo_label = torch.softmax(cosine_scores, dim=1)
-                                                max_probs, predicted_classes = torch.max(pseudo_label, dim=1)
-                                                mask = max_probs.ge(p_cutoff).float()
-                                                # predicted_classes = torch.argmax(cosine_scores, dim=1)  # (batch_size,)
-                                            elif unlabels_predict_mode == 'sqeuclidean':
-                                                class_means_squared = torch.sum(prototypes_new**2, dim=1, keepdim=True)  # (num_classes, 1)
-                                                outputs_feature_squared = torch.sum(feats_ulb**2, dim=1, keepdim=True).T  # (1, batch_size)
-                                                dot_product = torch.matmul(prototypes_new, feats_ulb.T)  # (num_classes, batch_size)
-                                                squared_distances = class_means_squared + outputs_feature_squared - 2 * dot_product  # (num_classes, batch_size)
-                                                pseudo_label = torch.softmax(-torch.sqrt(squared_distances.T), dim=1)  # (num_classes, batch_size)
-                                                max_probs, max_idx = torch.max(pseudo_label, dim=-1)
-                                                mask = max_probs.ge(p_cutoff).float()
-                                                predicted_classes = torch.argmin(squared_distances, dim=0)  # (batch_size,)
-                                            else:
-                                                raise ValueError('unlabels_predict_mode: {} not supported'.format(unlabels_predict_mode))
-                                        else:
-                                            pseudo_label = torch.softmax(outputs_ulb[:, old_cn:total_cn], dim=-1)
+                                        consloss_ulb = ce_loss(outputs_s_ulb, pseudo_label, False, reduction='none') * mask
+                                    consloss_ulb = consloss_ulb.mean()
+                                    
+                                    ulb_total += gt.size(0)
+                                    ulb_correct += predicted_classes.eq(gt).sum().item()
+                                    pseudo_acc = predicted_classes.eq(gt).sum().item() / gt.size(0)
+                                    
+                                    if mask.bool().any():
+                                        ulb_mask_total += gt[mask.bool()].size(0)
+                                        ulb_mask_correct += predicted_classes[mask.bool()].eq(gt[mask.bool()]).sum().item()
+                                        mask_pseudo_acc = predicted_classes[mask.bool()].eq(gt[mask.bool()]).sum().item() / gt[mask.bool()].size(0)
+
+                                    if not mask.bool().all():
+                                        no_mask_pseudo_acc = predicted_classes[torch.logical_not(mask.bool())].eq(gt[torch.logical_not(mask.bool())]).float().mean().item()
+                                    
+                                    if not no_use_conloss_on_ulb:
+                                        scores = F.cosine_similarity(text_anchor.unsqueeze(0).repeat(len(feats_ulb), 1, 1),
+                                                                    feats_s_ulb.unsqueeze(1).repeat(1, len(text_anchor), 1), 2) / 0.1
+                                        conloss_ulb = F.cross_entropy(scores, predicted_classes.long(), reduction='none') * mask
+                                        conloss_ulb = conloss_ulb.mean()
+                                    else:
+                                        conloss_ulb = 0.0
+
+                                    if use_ulb_kd:
+                                        # 仿照ICCV蒸馏的无标记数据蒸馏实现
+                                        _, _, ref_feats_ulb, _ = ref_model(inputs_s_ulb, return_feats=True)
+                                        
+                                        normalized_ref_feats_ulb = F.normalize(torch.cat((ref_feats,ref_feats_ulb)), p=2, dim=1)
+
+                                        # 使用当前batch的旧类标记数据 --> similarity_part
+                                        if old_mask.sum() > 0:
+                                            num_prototypes = prototypes_ref.shape[0]
+                                            prototype_targets = torch.arange(num_prototypes, device=prototypes_ref.device)
+                                            labels_metric = F.one_hot(prototype_targets, num_classes=num_prototypes)
+                                            teacher_logits = normalized_ref_feats_ulb @ prototypes_ref.T
+                                            teacher_prob = F.softmax(teacher_logits / 0.1, dim=1)
                                             
-                                            if use_da:
-                                                pseudo_label = pseudo_label / distri
-                                                pseudo_label = pseudo_label / pseudo_label.sum(dim=1, keepdim=True)
-
-                                            max_probs, predicted_classes = torch.max(pseudo_label, dim=-1)
-                                            mask = max_probs.ge(p_cutoff).float()
-                                        
-                                        predicted_classes = predicted_classes + old_cn
-                                        if use_hard_labels:
-                                            consloss_ulb = ce_loss(outputs_s_ulb, predicted_classes, True, reduction='none') * mask
-                                        else:
-                                            consloss_ulb = ce_loss(outputs_s_ulb, pseudo_label, False, reduction='none') * mask
-                                        consloss_ulb = consloss_ulb.mean()
-                                        
-                                        ulb_total += gt.size(0)
-                                        ulb_correct += predicted_classes.eq(gt).sum().item()
-                                        pseudo_acc = predicted_classes.eq(gt).sum().item() / gt.size(0)
-                                        
-                                        if mask.bool().any():
-                                            ulb_mask_total += gt[mask.bool()].size(0)
-                                            ulb_mask_correct += predicted_classes[mask.bool()].eq(gt[mask.bool()]).sum().item()
-                                            mask_pseudo_acc = predicted_classes[mask.bool()].eq(gt[mask.bool()]).sum().item() / gt[mask.bool()].size(0)
-
-                                        if not mask.bool().all():
-                                            no_mask_pseudo_acc = predicted_classes[torch.logical_not(mask.bool())].eq(gt[torch.logical_not(mask.bool())]).float().mean().item()
-                                        
-                                        if not no_use_conloss_on_ulb:
-                                            # feats_ulb_masked = feats_ulb
-                                            # scores = F.cosine_similarity(text_anchor.unsqueeze(0).repeat(len(feats_ulb_masked), 1, 1),
-                                            # feats_ulb_masked.unsqueeze(1).repeat(1, len(text_anchor), 1), 2) / 0.1
-                                            # conloss_ulb = F.cross_entropy(scores, predicted_classes.long())
-                                            scores = F.cosine_similarity(text_anchor.unsqueeze(0).repeat(len(feats_ulb), 1, 1),
-                                                                        feats_s_ulb.unsqueeze(1).repeat(1, len(text_anchor), 1), 2) / 0.1
-                                            conloss_ulb = F.cross_entropy(scores, predicted_classes.long(), reduction='none') * mask
-                                            conloss_ulb = conloss_ulb.mean()
-                                        else:
-                                            conloss_ulb = 0.0
-
-                                        if use_ulb_kd:
-                                            # 仿照ICCV蒸馏的无标记数据蒸馏实现
-                                            _, _, ref_feats_ulb, _ = ref_model(inputs_s_ulb, return_feats=True)
-                                            
-                                            normalized_ref_feats_ulb = F.normalize(torch.cat((ref_feats,ref_feats_ulb)), p=2, dim=1)
-
-                                            # 使用所有的旧类标记数据 --> similarity_all
-                                            # labels_metric = F.one_hot(labels_bank[labels_bank < old_cn], num_classes=old_cn)
-                                            # teacher_logits = normalized_ref_feats_ulb @ ref_mem_bank[:, labels_bank < old_cn].detach() 
-                                            # teacher_prob = F.softmax(teacher_logits / 0.1, dim=1) @ labels_metric.float()
-                                            # student_logits = feats_ulb @ mem_bank[:, labels_bank < old_cn].detach() 
+                                            # student_logits = F.normalize(raw_feats_ulb, p=2, dim=1) @ normalized_feats.T
+                                            student_logits = F.normalize(torch.cat((feats, feats_ulb)), p=2, dim=1) @ prototypes_ref.T
                                             # student_prob = F.log_softmax(student_logits / 0.1, dim=1) @ labels_metric.float()
-                                            # assert teacher_prob.size() == student_prob.size() 
-                                            # suploss_kd_ulb = torch.sum(-teacher_prob.detach() * student_prob, dim=1).mean() * 0.1 * 0.1
+                                            student_prob = F.log_softmax(student_logits / 0.1, dim=1)
                                             
-                                            # 使用当前batch的旧类标记数据 --> similarity_part
-                                            if old_mask.sum() > 0:
-                                                # normalized_ref_feats = F.normalize(ref_raw_feats[old_mask], p=2, dim=1)
-                                                # normalized_feats = F.normalize(raw_feats[old_mask], p=2, dim=1)
-                                                # labels_metric = F.one_hot(targets[old_mask], num_classes=old_cn)
-                                                # prototypes_ref = F.normalize(prototypes_ref, p=2, dim=1)
-                                                num_prototypes = prototypes_ref.shape[0]
-                                                prototype_targets = torch.arange(num_prototypes, device=prototypes_ref.device)
-                                                labels_metric = F.one_hot(prototype_targets, num_classes=num_prototypes)
-                                                # print(normalized_ref_feats.shape, labels_metric.shape, prototypes_old.shape)
-                                                # teacher_logits = normalized_ref_feats_ulb @ normalized_ref_feats.T
-                                                teacher_logits = normalized_ref_feats_ulb @ prototypes_ref.T
-                                                # teacher_prob = F.softmax(teacher_logits / 0.1, dim=1) @ labels_metric.float()
-                                                teacher_prob = F.softmax(teacher_logits / 0.1, dim=1)
-                                                
-                                                # student_logits = F.normalize(raw_feats_ulb, p=2, dim=1) @ normalized_feats.T
-                                                student_logits = F.normalize(torch.cat((feats, feats_ulb)), p=2, dim=1) @ prototypes_ref.T
-                                                # student_prob = F.log_softmax(student_logits / 0.1, dim=1) @ labels_metric.float()
-                                                student_prob = F.log_softmax(student_logits / 0.1, dim=1)
-                                                
-                                                assert teacher_prob.size() == student_prob.size() 
-                                                suploss_kd_ulb = torch.sum(-teacher_prob.detach() * student_prob, dim=1).mean() * 1 #* 0.2
-                                            else:
-                                                suploss_kd_ulb = torch.tensor(0.0).to(device)
-
+                                            assert teacher_prob.size() == student_prob.size() 
+                                            suploss_kd_ulb = torch.sum(-teacher_prob.detach() * student_prob, dim=1).mean() * 1 #* 0.2
                                         else:
-                                            suploss_kd_ulb = 0.0
+                                            suploss_kd_ulb = torch.tensor(0.0).to(device)
 
-                                        if use_ulb_aug:
-                                            p_prototypes = torch.cat([prototypes_old, prototypes_new], dim=0)
-                                            # COSINE的另一种实现方式
-                                            q_cosine_scores = F.cosine_similarity(p_prototypes.unsqueeze(0).repeat(len(feats_ulb), 1, 1),
-                                                                                feats_ulb.unsqueeze(1).repeat(1, len(p_prototypes), 1), 2) / 0.1
-                                            q_pseudo_label = torch.softmax(q_cosine_scores, dim=1)
-                                            q_predict_class = q_pseudo_label.max(1)[1]
-                                            
-                                            if not mask.bool().all():
-                                                ulb_aug_old_mask = torch.logical_and(q_predict_class.lt(old_cn), torch.logical_not(mask.bool()))
-                                                ulb_aug_new_mask = torch.logical_and(q_predict_class.ge(old_cn), torch.logical_not(mask.bool()))
+                                    else:
+                                        suploss_kd_ulb = 0.0
 
-                                                old_class_num = ulb_aug_old_mask.sum().item()
-                                                new_class_num = ulb_aug_new_mask.sum().item()
-
-                                                if ulb_aug_new_mask.any():
-                                                    ulb_aug_new_acc = q_predict_class[ulb_aug_new_mask].eq(gt[ulb_aug_new_mask]).float().mean().item()
-                                                    ulb_new_acc = predicted_classes[ulb_aug_new_mask].eq(gt[ulb_aug_new_mask]).float().mean().item()
-                                                else:
-                                                    ulb_aug_new_acc = 0.0
-                                                    ulb_new_acc = 0.0
-                                            
-                                            consloss_ulb_aug = ce_loss(outputs_s_ulb, q_predict_class, True, reduction='none') * torch.logical_not(mask.bool()).float()
-                                                                                        
-                                            consloss_ulb_aug = consloss_ulb_aug.mean()
-                                        else:
-                                            consloss_ulb_aug = 0.0
+                                    if use_ulb_aug:
+                                        p_prototypes = torch.cat([prototypes_old, prototypes_new], dim=0)
+                                        # COSINE的另一种实现方式
+                                        q_cosine_scores = F.cosine_similarity(p_prototypes.unsqueeze(0).repeat(len(feats_ulb), 1, 1),
+                                                                            feats_ulb.unsqueeze(1).repeat(1, len(p_prototypes), 1), 2) / 0.1
+                                        q_pseudo_label = torch.softmax(q_cosine_scores, dim=1)
+                                        q_predict_class = q_pseudo_label.max(1)[1]
                                         
-                                        loss = suploss_lb \
-                                                + lambda_kd * (suploss_kd + suploss_kd_ulb) \
-                                                + lambda_session * (suploss_lb_session + suploss_ulb_session) \
-                                                + lambda_con * (conloss_lb + conloss_ulb) \
-                                                + lambda_reg * suploss_reg \
-                                                + lambda_cons * (consloss_ulb + consloss_ulb_aug) \
-                                
+                                        if not mask.bool().all():
+                                            ulb_aug_old_mask = torch.logical_and(q_predict_class.lt(old_cn), torch.logical_not(mask.bool()))
+                                            ulb_aug_new_mask = torch.logical_and(q_predict_class.ge(old_cn), torch.logical_not(mask.bool()))
+
+                                            old_class_num = ulb_aug_old_mask.sum().item()
+                                            new_class_num = ulb_aug_new_mask.sum().item()
+
+                                            if ulb_aug_new_mask.any():
+                                                ulb_aug_new_acc = q_predict_class[ulb_aug_new_mask].eq(gt[ulb_aug_new_mask]).float().mean().item()
+                                                ulb_new_acc = predicted_classes[ulb_aug_new_mask].eq(gt[ulb_aug_new_mask]).float().mean().item()
+                                            else:
+                                                ulb_aug_new_acc = 0.0
+                                                ulb_new_acc = 0.0
+                                        
+                                        consloss_ulb_aug = ce_loss(outputs_s_ulb, q_predict_class, True, reduction='none') * torch.logical_not(mask.bool()).float()
+                                                                                    
+                                        consloss_ulb_aug = consloss_ulb_aug.mean()
+                                    else:
+                                        consloss_ulb_aug = 0.0
+                                    
+                                    loss = suploss_lb \
+                                            + lambda_kd * (suploss_kd + suploss_kd_ulb) \
+                                            + lambda_con * (conloss_lb + conloss_ulb) \
+                                            + lambda_cons * (consloss_ulb + consloss_ulb_aug) \
+                            
                                 else:
                                     loss = suploss_lb \
                                             + lambda_kd * suploss_kd \
-                                            + lambda_reg * suploss_reg \
-                                            + lambda_session * suploss_lb_session \
                                             + lambda_con * conloss_lb
 
                                 loss.backward()
                                 tg_optimizer.step()
-                                # tg_lr_scheduler.step()
 
                                 train_loss += loss.item()
                                 train_suploss_kd += suploss_kd.item()
                                 train_suploss_lb += suploss_lb.item()
-                                train_suploss_reg += suploss_reg.item() if use_srd else 0.0
-                                train_suploss_session += suploss_lb_session.item() if use_session_labels else 0.0
                                 train_conloss_lb += conloss_lb.item() if use_conloss else 0.0
                                 train_consloss_ulb += consloss_ulb.item()  if include_unlabel else 0.0
-                                train_suploss_ulb_session += suploss_ulb_session.item() if include_unlabel and use_session_labels else 0.0
                                 train_conloss_ulb += conloss_ulb.item() if include_unlabel and not no_use_conloss_on_ulb else 0.0
                                 train_suploss_kd_ulb += suploss_kd_ulb.item() if include_unlabel and use_ulb_kd else 0.0
-                                train_inloss_ulb += in_loss.item() if include_unlabel and use_sim and epoch!=0 else 0.0
                                 train_consloss_ulb_aug += consloss_ulb_aug.item() if include_unlabel and use_ulb_aug else 0.0
                                 train_util_ratio += mask.mean().item() if include_unlabel else 0.0  
             
@@ -712,12 +517,6 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
                                 if use_conloss:
                                     writer.add_scalar('Unlabel_Train_Stage/ConLoss_LB', conloss_lb.item(), (u_i*10 + epoch) * len(trainloader_1) + batch_idx)
                                 
-                                if use_srd:
-                                    writer.add_scalar('Unlabel_Train_Stage/SupLoss_REG', suploss_reg.item(), (u_i*10 + epoch) * len(trainloader_1) + batch_idx)
-
-                                if use_session_labels:
-                                    writer.add_scalar('Unlabel_Train_Stage/SupLoss_SESSION', suploss_lb_session.item(), (u_i*10 + epoch) * len(trainloader_1) + batch_idx)
-
                                 if include_unlabel and not skip:
                                     writer.add_scalar('Unlabel_Train_Stage/ConsLoss_ULB', consloss_ulb.item(), (u_i*10 + epoch) * len(trainloader_1) + batch_idx)
                                     writer.add_scalar('Unlabel_Train_Stage/Ratio_ULB', mask.mean().item(), (u_i*10 + epoch) * len(trainloader_1) + batch_idx)
@@ -727,10 +526,6 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
                                         writer.add_scalar('Unlabel_Train_Stage/ConLoss_ULB', conloss_ulb.item(), (u_i*10 + epoch) * len(trainloader_1) + batch_idx)
                                     if use_ulb_kd:
                                         writer.add_scalar('Unlabel_Train_Stage/SupLoss_KD_ULB', suploss_kd_ulb.item(), (u_i*10 + epoch) * len(trainloader_1) + batch_idx)
-                                    if use_sim:
-                                        writer.add_scalar('Unlabel_Train_Stage/InLoss_ULB', in_loss.item(), (u_i*10 + epoch) * len(trainloader_1) + batch_idx)    
-                                    if use_session_labels:
-                                        writer.add_scalar('Unlabel_Train_Stage/SupLoss_ULB_SESSION', suploss_ulb_session.item(), (u_i*10 + epoch) * len(trainloader_1) + batch_idx)
                                     if use_ulb_aug:
                                         writer.add_scalar('Unlabel_Train_Stage/ConsLoss_ULB_AUG', consloss_ulb_aug.item(), (u_i*10 + epoch) * len(trainloader_1) + batch_idx)
                                         if not mask.bool().all():
@@ -749,18 +544,14 @@ def incremental_train_and_eval(args, base_lamda, adapt_lamda, u_t, label2id, unc
                             writer.add_scalars("Unlabels Training Stage Accuracy", {"Train": 100.*correct/total, "Test": test_acc}, u_i*10+epoch)
                             writer.add_scalars("Unlabels Training Stage  Loss", {"Train": train_loss / (batch_idx + 1), "Test": test_loss}, u_i*10+epoch)
                             writer.add_scalars("Unlabels Training Stage  Pseudo Accuracy", {"Acc_p": pseudo_label_acc_p, "Acc_s": pseudo_label_acc_s}, u_i*10+epoch)
-                            
-                            if use_session_labels:
-                                writer.add_scalar("Unlabels Training Stage Session Accuracy", test_acc_session, u_i*10+epoch)
-                                writer.add_scalar("Unlabels Training Stage Session Loss",  test_loss_session, u_i*10+epoch)
 
                             if epoch % 2 == 1:
                                 print('Epoch: {}, acc_classifier: {}, acc_proto: {}'.format(epoch, pseudo_label_acc_p, pseudo_label_acc_s))
-                                print('Epoch: {}, Trainset: {}, Unlabel_trainset: {}, Lr: {}, P_cutoff: {}, Lambda_KD: {}, Lambda_CON: {}, Lambda_CONS: {}, Lambda_SESSION: {}'.format(epoch, len(trainset_1), \
-                                        len(ssl_trainloader.dataset), tg_lr_scheduler.get_last_lr()[0], p_cutoff, lambda_kd, lambda_con, lambda_cons, lambda_session))
-                                print('Epoch: {}, SupLoss_LB: {:.4f}, SupLoss_KD: {:.4f}, SupLoss_REG: {:.4f}, SupLoss_SESSION: {:.4f}, ConLoss_LB: {:.4f}, ConsLoss_ULB: {:.4f}, ConsLoss_ULB_Aug: {:.4f}, SupLoss_KD_ULB: {:.4f}, ConLoss_ULB: {:.4f}, SupLoss_SESSION_ULB: {:.4f}, InLoss_ULB: {:.4f}, Loss: {:.4f} Acc: {:.4f}, Test Loss: {:.4f}, Test Acc: {:.4f}, Test Seesion Loss: {:.4f}, Test Session Acc: {:.4f}'.format(epoch, \
-                                        train_suploss_lb / (batch_idx+1), train_suploss_kd / (batch_idx+1), train_suploss_reg /(batch_idx+1), train_suploss_session / (batch_idx+1), train_conloss_lb / (batch_idx+1), train_consloss_ulb / (batch_idx+1), train_consloss_ulb_aug / (batch_idx+1), train_suploss_kd_ulb / (batch_idx+1), 
-                                        train_conloss_ulb / (batch_idx+1), train_suploss_ulb_session / (batch_idx+1), train_inloss_ulb / (batch_idx+1), train_loss / (batch_idx+1), 100. * correct / total, test_loss, test_acc, test_loss_session, test_acc_session))
+                                print('Epoch: {}, Trainset: {}, Unlabel_trainset: {}, Lr: {}, P_cutoff: {}, Lambda_KD: {}, Lambda_CON: {}, Lambda_CONS: {}'.format(epoch, len(trainset_1), \
+                                        len(ssl_trainloader.dataset), tg_lr_scheduler.get_last_lr()[0], p_cutoff, lambda_kd, lambda_con, lambda_cons))
+                                print('Epoch: {}, SupLoss_LB: {:.4f}, SupLoss_KD: {:.4f}, ConLoss_LB: {:.4f}, ConsLoss_ULB: {:.4f}, ConsLoss_ULB_Aug: {:.4f}, SupLoss_KD_ULB: {:.4f}, ConLoss_ULB: {:.4f}, Loss: {:.4f} Acc: {:.4f}, Test Loss: {:.4f}, Test Acc: {:.4f}, Test Seesion Loss: {:.4f}, Test Session Acc: {:.4f}'.format(epoch, \
+                                        train_suploss_lb / (batch_idx+1), train_suploss_kd / (batch_idx+1), train_conloss_lb / (batch_idx+1), train_consloss_ulb / (batch_idx+1), train_consloss_ulb_aug / (batch_idx+1), train_suploss_kd_ulb / (batch_idx+1), 
+                                        train_conloss_ulb / (batch_idx+1), train_loss / (batch_idx+1), 100. * correct / total, test_loss, test_acc, test_loss_session, test_acc_session))
                                 
                         
                     if unlabeled_data.shape[0] < 1:
@@ -999,14 +790,6 @@ def validate(tg_model, testloader, device, weight_per_class, nb_cl_fg=None, nb_c
     
     return test_loss/(batch_idx+1), 100.*correct/total, test_loss_session/(batch_idx+1), 100.*correct_session/total
 
-def get_session_labels(class_labels: torch.tensor, nb_cl_fg: int, nb_cl: int):
-    session_labels = torch.ones_like(class_labels) * -1
-    for i in range(len(class_labels)):
-        if class_labels[i] < nb_cl_fg:
-            session_labels[i] = 0
-        else:
-            session_labels[i] = (class_labels[i] - nb_cl_fg) // (nb_cl) + 1
-    return session_labels.to(class_labels)
 
 
 def test_pseudo_acc(tg_model, prototypes_new, unlabeled_trainloader, unlabels_predict_mode, old_cn, total_cn, device):

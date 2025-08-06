@@ -17,7 +17,6 @@ from utils_incremental.compute_features_der import compute_features, compute_fea
 from utils_incremental.compute_accuracy_der import compute_accuracy
 from utils_incremental.compute_confusion_matrix import compute_confusion_matrix
 from utils_incremental.incremental_train_and_eval_semi_der import incremental_train_and_eval, fill_pro_list, get_proto
-# from utils_incremental.incremental_train_and_eval_semi_t import incremental_train_and_eval, fill_pro_list, get_proto
 from resnet import resnet18
 from resnet20_cifar import resnet20
 from resnet32_cifar import resnet32
@@ -28,7 +27,6 @@ import json
 import random
 import pdb
 from dataloder import BaseDataset, BaseDataset_flag, UnlabelDataset
-from torchvision.transforms.functional import to_pil_image
 import torch.backends.cudnn as cudnn
 
 parser = argparse.ArgumentParser()
@@ -255,15 +253,15 @@ for session in range(start_session, int(args.num_classes / args.nb_cl)):
     elif args.dataset == 'cifar10':
         # 随机数据集划分
         class_index = np.arange(session * args.nb_cl, (session + 1) * args.nb_cl)
-        X_train, Y_train, unlabeled_data, unlabeled_gt = utils_pytorch.get_data_file_cifar(data_dir="./dataset/cifar10/", base_session=True, index=class_index, train=True, unlabel=False, labels_num=args.k_shot, return_ulb=True, dataset=args.dataset)
-        X_valid,  Y_valid = utils_pytorch.get_data_file_cifar(data_dir="./dataset/cifar10/", base_session=True, index=class_index, train=False, unlabel=False, dataset=args.dataset)
+        X_train, Y_train, unlabeled_data, unlabeled_gt = utils_pytorch.get_data_file_cifar(data_dir="./cifar10/", base_session=True, index=class_index, train=True, unlabel=False, labels_num=args.k_shot, return_ulb=True, dataset=args.dataset)
+        X_valid,  Y_valid = utils_pytorch.get_data_file_cifar(data_dir="./cifar10/", base_session=True, index=class_index, train=False, unlabel=False, dataset=args.dataset)
         
     elif args.dataset == 'cifar100':
         # 使用DSGD的数据集划分
         # 随机数据集划分
         class_index = np.arange(session * args.nb_cl, (session + 1) * args.nb_cl)
-        X_train, Y_train, unlabeled_data, unlabeled_gt = utils_pytorch.get_data_file_cifar(data_dir="./dataset/cifar100/", base_session=True, index=class_index, train=True, unlabel=False, labels_num=args.k_shot, return_ulb=True, dataset=args.dataset)
-        X_valid, Y_valid = utils_pytorch.get_data_file_cifar(data_dir="./dataset/cifar100/", base_session=True, index=class_index, train=False, unlabel=False)
+        X_train, Y_train, unlabeled_data, unlabeled_gt = utils_pytorch.get_data_file_cifar(data_dir="./cifar100/", base_session=True, index=class_index, train=True, unlabel=False, labels_num=args.k_shot, return_ulb=True, dataset=args.dataset)
+        X_valid, Y_valid = utils_pytorch.get_data_file_cifar(data_dir="./cifar100/", base_session=True, index=class_index, train=False, unlabel=False)
         
     elif args.dataset == 'imagenet100':
         class_index = np.arange(session * args.nb_cl, (session + 1) * args.nb_cl)

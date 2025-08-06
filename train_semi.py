@@ -306,14 +306,14 @@ for session in range(start_session, int(args.num_classes / args.nb_cl)):
     elif args.dataset == 'cifar10':
         # 随机数据集划分
         class_index = np.arange(session * args.nb_cl, (session + 1) * args.nb_cl)
-        X_train, Y_train, unlabeled_data, unlabeled_gt = utils_pytorch.get_data_file_cifar(data_dir="./dataset/cifar10/", base_session=True, index=class_index, train=True, unlabel=False, labels_num=args.k_shot, return_ulb=True, dataset=args.dataset)
-        X_valid,  Y_valid = utils_pytorch.get_data_file_cifar(data_dir="./dataset/cifar10/", base_session=True, index=class_index, train=False, unlabel=False, dataset=args.dataset)
+        X_train, Y_train, unlabeled_data, unlabeled_gt = utils_pytorch.get_data_file_cifar(data_dir="./cifar10/", base_session=True, index=class_index, train=True, unlabel=False, labels_num=args.k_shot, return_ulb=True, dataset=args.dataset)
+        X_valid,  Y_valid = utils_pytorch.get_data_file_cifar(data_dir="./cifar10/", base_session=True, index=class_index, train=False, unlabel=False, dataset=args.dataset)
         
     elif args.dataset == 'cifar100':
         # 随机数据集划分
         class_index = np.arange(session * args.nb_cl, (session + 1) * args.nb_cl)
-        X_train, Y_train, unlabeled_data, unlabeled_gt = utils_pytorch.get_data_file_cifar(data_dir="./dataset/cifar100/", base_session=True, index=class_index, train=True, unlabel=False, labels_num=args.k_shot, return_ulb=True, dataset=args.dataset)
-        X_valid, Y_valid = utils_pytorch.get_data_file_cifar(data_dir="./dataset/cifar100/", base_session=True, index=class_index, train=False, unlabel=False)
+        X_train, Y_train, unlabeled_data, unlabeled_gt = utils_pytorch.get_data_file_cifar(data_dir="./cifar100/", base_session=True, index=class_index, train=True, unlabel=False, labels_num=args.k_shot, return_ulb=True, dataset=args.dataset)
+        X_valid, Y_valid = utils_pytorch.get_data_file_cifar(data_dir="./cifar100/", base_session=True, index=class_index, train=False, unlabel=False)
         
     elif args.dataset == 'imagenet100':
         class_index = np.arange(session * args.nb_cl, (session + 1) * args.nb_cl)
