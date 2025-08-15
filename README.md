@@ -19,6 +19,12 @@ This repository contains the official PyTorch implementation for our paper:
 
 ## Introduction
 
+<div align=center>
+
+<img width="600px" src="/figures/intro.png"> 
+ 
+</div>
+
 Semi-supervised continual learning (SSCL) aims to incrementally learn from a data stream containing both labeled and unlabeled samples, which is crucial for reducing annotation costs while handling continuous data influx. SSCL presents a tripartite challenge: ensuring effective **Unlabeled Learning (UL)**, maintaining **Memory Stability (MS)** on old tasks, and preserving **Learning Plasticity (LP)** for new tasks. Previous works often address these aspects in isolation.
 
 In this paper, we introduce **USP**, a divide-and-conquer framework designed to synergistically enhance all three facets of SSCL:
@@ -30,10 +36,7 @@ In this paper, we introduce **USP**, a divide-and-conquer framework designed to 
 Comprehensive evaluations show that USP significantly outperforms prior SSCL methods, demonstrating its effectiveness in balancing the stability-plasticity-unlabeled learning trade-off.
 
 <div align=center>
-
-<img width="750px" src="/figures/intro.png"> 
-<img width="750px" src="/figures/met.png"> 
- 
+<img width="500px" src="/figures/met.png"> 
 </div>
 
 ## Requirements
