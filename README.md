@@ -31,8 +31,8 @@ Comprehensive evaluations show that USP significantly outperforms prior SSCL met
 
 <div align=center>
 
-<img width="750px" src="/figures/intro.jpg"> 
-<img width="750px" src="/figures/met.jpg"> 
+<img width="750px" src="/figures/intro.png"> 
+<img width="750px" src="/figures/met.png"> 
  
 </div>
 
