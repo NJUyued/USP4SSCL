@@ -3,7 +3,6 @@ dataset/
 log/
 result/
 *.log
-*.png
 *.npy
 *.pth
 *.txt
@@ -11,7 +10,6 @@ result/
 *.npz
 *.out
 *.pdf
-*.png
 *.jpg
 # Byte-compiled / optimized / DLL files
 __pycache__/
