@@ -1,10 +1,10 @@
-# USP4SSCL: Divide-and-Conquer for Enhancing Unlabeled Learning, Stability, and Plasticity in Semi-supervised Continual Learning
+# USP4SSCL
 
 This repository contains the official PyTorch implementation for our paper:
 
 > **Divide-and-Conquer for Enhancing Unlabeled Learning, Stability, and Plasticity in Semi-supervised Continual Learning**     
 > **Authors**: ***[Yue Duan](https://njuyued.github.io/)\***, Taicai Chen\*, Lei Qi, Yinghuan Shi*     
-> \*: Equal contribution. 
+> \*: Equal contribution
 
   - 🔗 **Quick links:** [[PDF](https://arxiv.org/pdf/2508.05316)/[Abs](https://arxiv.org/abs/2508.05316)-arXiv | [Poster]()]
      
@@ -128,9 +128,3 @@ or
 }
 ```
 
-## Acknowledgement
-
-Our implementation builds upon several great open-source projects. We would like to express our gratitude to the authors of the following works:
-
-  - [DER: Dynamically Expandable Representation for Class Incremental Learning](https://www.google.com/search?q=https://github.com/space-ros/der)
-  - [PASS: Protected Against Synonym Substitution](https://www.google.com/search?q=https://github.com/alisirca/PASS-official)
